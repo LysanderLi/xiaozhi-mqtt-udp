@@ -2,7 +2,7 @@ import modem
 import ujson as json
 from usr import uuid
 import usocket as socket
-from usr.threading import Thread, Condition
+from usr.threading import Thread, Condition,Event
 from usr.logging import getLogger
 import umqtt
 import request
@@ -75,9 +75,10 @@ class MqttClient(object):
         self._sub_topic = None
         self.udp_socket = None
         self._mqtt_recv = None
-        self.udp_recv_thread = None
+        self._udp_recv = None
         self.audio_encryptor = None
         self._running = False  # 添加线程运行标志
+        self.udp_connect_event = Event()
         self.ota_get()
 
     def ota_get(self):
@@ -121,7 +122,7 @@ class MqttClient(object):
         #self.connect()
         pass
     def is_state_ok(self):
-        if self.cli.get_mqttsta() == 0 and self.udp_socket.getsocketsta() == 4:
+        if self.cli.get_mqttsta() == 0 :
             return True
         return False
     def __exit__(self, *args, **kwargs):
@@ -153,13 +154,15 @@ class MqttClient(object):
                 self._mqtt_recv.start(stack_size=16)
                 self.cli.subscribe(self._sub_topic)
                 utime.sleep(1)  # 确保订阅完成
-                self.mqtt_send(hello_msg.to_bytes())
-            logger.debug("waitting for udp connection")
-            utime.sleep(5)
-            if not self.udp_socket :
-                logger.error("udp connect failed")
-                return False
-            return True
+                self.mqtt_send(hello_msg.to_bytes())            
+            while not self.udp_connect_event.is_set():
+                logger.debug("waitting for udp connection")
+                utime.sleep(1)
+            if self.udp_connect_event.is_set() :
+                logger.debug("mqtt and udp connect success")
+            else :
+                logger.debug("mqtt and udp connect fail")     
+
         except Exception as e:
             logger.error("{} connect failed: {}".format(self, e))
             self.cli = None
@@ -169,6 +172,7 @@ class MqttClient(object):
 
     def disconnect(self):
         self._running = False
+        self.udp_connect_event.clear()
         if self.udp_socket:
             self.udp_socket.close()
             self.udp_socket = None
@@ -176,9 +180,9 @@ class MqttClient(object):
             self.cli.disconnect()
             self.cli = None
         # 确保线程完全退出后再清理
-        if self.udp_recv_thread:
-            self.udp_recv_thread.join()
-            self.udp_recv_thread = None
+        if self._udp_recv:
+            self._udp_recv.join()
+            self._udp_recv = None
         if self._mqtt_recv:
             self._mqtt_recv.join()
             self._mqtt_recv = None
@@ -190,16 +194,14 @@ class MqttClient(object):
         self.cli.publish(self._pub_topic,data)
 
     def udp_send(self, data):
-        """send data to server"""
         if self.audio_encryptor is None:
-            self.audio_encryptor = AudioEncryptor(aes_opus_info["udp"]["key"],aes_opus_info["udp"]["nonce"])
-            logger.info("UDP encryptor initialized")
-        logger.info("udp send data:{} ".format(data))
-        #udp_server,udp_port = aes_opus_info["udp"]["server"],aes_opus_info["udp"]["port"]
-        date = utime.localtime()
-        timestamp = utime.mktime(date)
-        encrypt_data =  self.audio_encryptor.encrypt_packet(data,aes_opus_info["udp"]["nonce"],timestamp)
-        self.udp_socket.send(encrypt_data)
+            self.audio_encryptor = AudioEncryptor(aes_opus_info["udp"]["key"], 
+                                                aes_opus_info["udp"]["nonce"])
+
+        encrypt_data = self.audio_encryptor.encrypt_packet(data)
+        logger.debug("send data:{} ".format(encrypt_data))
+
+        self.udp_socket.sendto(encrypt_data,(aes_opus_info["udp"]["server"],aes_opus_info["udp"]["port"]))
         
     def set_callback(self, audio_message_handler=None, json_message_handler=None):
         if audio_message_handler is not None and callable(audio_message_handler):
@@ -226,11 +228,13 @@ class MqttClient(object):
             aes_opus_info = msg
             self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,socket.IPPROTO_UDP)
             self.udp_socket.connect((aes_opus_info['udp']['server'], aes_opus_info['udp']['port']))
+            self.udp_connect_event.set()
             self.udp_socket.settimeout(1)  # 设置0.1秒超时
-            self.udp_recv_thread = Thread(target=self._udp_recv_thread)
+            self._udp_recv = Thread(target=self._udp_recv_thread)
+            self._udp_recv.start(stack_size=24)
         
         elif msg["type"] == "goodbye":
-            logger.info("Processing goodbye message")
+            logger.info("recv goodbye message")
             print(msg)
             aes_opus_info["session_id"] = None  # 清理会话标识
             self.disconnect()
@@ -320,112 +324,42 @@ class MqttClient(object):
 class AudioEncryptor:
     def __init__(self, key_hex, nonce_hex):
         self.key = ubinascii.unhexlify(key_hex)
-        self.nonce = ubinascii.unhexlify(nonce_hex)
-        self.seq_num = 0  # 当前发送序列号
-        self.expected_seq = 0  # 当前接收期望序列号
-        self._init_aes()
+        self.base_nonce = ubinascii.unhexlify(nonce_hex)  # 原始12字节nonce
+        self.seq_num = 0
 
-    def _init_aes(self):
-        """初始化AES-CTR上下文"""
-        counter = struct.pack(">I", self.seq_num)
-        iv = self.nonce + counter
-        self.aes = ucryptolib.aes(self.key, ucryptolib.MODE_CTR, iv)  # 2代表CTR模式
-
-    def _increment_seq(self):
-        """原子性递增序列号"""
+    def encrypt_packet(self, payload):
+        """简化加密：整体加密+正确nonce结构"""
+        logger.debug("Encrypt: seq={}, len={}".format(self.seq_num, len(payload)))
+        # 1. 构造16字节新nonce (4字节base + 2字节长度 + 8字节base + 4字节序列号)
+        new_nonce = (
+            self.base_nonce[0:4] +
+            struct.pack(">H", len(payload)) +
+            self.base_nonce[4:12] +
+            struct.pack(">I", self.seq_num)
+        )
+        
+        # 2. 整体加密（非分块）
+        logger.debug("准备加密数据...")
+        aes = ucryptolib.aes(self.key, ucryptolib.MODE_CTR, new_nonce)
+        encrypted = aes.encrypt(payload)
+        logger.debug("加密完成...")
+        # 3. 序列号递增（每个包只增一次）
         self.seq_num = (self.seq_num + 1) % (1 << 32)
-        self._init_aes()  # 重新初始化AES上下文
+        return new_nonce + encrypted
 
-    def encrypt_packet(self, payload, ssrc, timestamp):
-        """
-        加密完整UDP数据包（严格16字节头部）
-        参数：
-            payload: 待加密的原始音频数据（bytes）
-            ssrc: 同步源标识符（int）
-            timestamp: 时间戳（int）
-        返回：
-            完整加密UDP数据包（bytes）
-        """
-        # 1. 构建头部（严格16字节）
-        header = bytearray(16)
-        header[0] = 0x01  # type: 音频数据包
-        header[1] = 0x00  # flags: 保留字段
-        header[2], header[3] = struct.pack("!H", len(payload))  # 负载长度（网络字节序）
-        header[4], header[5], header[6], header[7] = struct.pack("!I", ssrc)  # SSRC
-        header[8], header[9], header[10], header[11] = struct.pack("!I", timestamp)  # 时间戳
-        header[12], header[13], header[14], header[15] = struct.pack("!I", self.seq_num)  # 序列号
+    def decrypt_packet(self, raw):
+        """修正解密：前16字节=nonce，剩余=加密数据"""
+        logger.debug("开始解密...")
+        if len(raw) < 16:
+            return None
 
-        # 2. 加密负载
-        encrypted_payload = bytearray()
-        for i in range(0, len(payload), 16):
-            block = payload[i:i+16]
-            pad_len = 16 - len(block)
-            block += bytes([pad_len])*pad_len  # PKCS7填充
-            
-            # AES-CTR加密单个块
-            keystream = self.aes.encrypt(bytes(16))
-            ct_block = bytes([b ^ k for b, k in zip(block, keystream)])
-            encrypted_payload += ct_block
-            
-            # 自增序列号（仅加密时更新）
-            self._increment_seq()
+        nonce = raw[:16]
+        ciphertext = raw[16:]
 
-        # 3. 组合完整数据包
-        return header + encrypted_payload
-
-    def decrypt_packet(self, encrypted_packet):
-        """
-        解密完整UDP数据包（严格16字节头部）
-        参数：
-            encrypted_packet: 完整的加密UDP数据包（bytes）
-        返回：
-            解密后的原始音频数据（bytes）或None（验证失败）
-        """
-        # 最小数据包长度验证
-        if len(encrypted_packet) < 16:
-            print("ERR: Packet too short")
-            return None
-        
-        # 解析头部（严格16字节）
-        header = encrypted_packet[:16]
-        payload = encrypted_packet[16:]
-        
-        # 解析头部字段
-        packet_type = header[0]
-        payload_len_network = header[2] << 8 | header[3]
-        ssrc = struct.unpack("!I", header[4:8])[0]
-        timestamp = struct.unpack("!I", header[8:12])[0]
-        received_seq = struct.unpack("!I", header[12:16])[0]
-        
-        # 协议类型验证
-        if packet_type != 0x01:
-            print("ERR: Invalid packet type {}".format(packet_type))
-            return None
-        
-        # 序列号验证
-        if received_seq != self.expected_seq:
-            print("ERR: Sequence mismatch (expected {}, got {})".format(self.expected_seq, received_seq))
-            return None
-        
-        # AES-CTR解密
-        decrypted_payload = bytearray()
-        for i in range(0, len(payload), 16):
-            block = payload[i:i+16]
-            # 解密单个块
-            decrypted_block = bytes([a ^ b for a, b in zip(block, self.aes.encrypt(bytes(16)))])
-            decrypted_payload += decrypted_block
-        
-        # 移除PKCS7填充
-        pad_length = decrypted_payload[-1]
-        if pad_length < 1 or pad_length > 16:
-            print("ERR: Invalid padding length {}".format(pad_length))
-            return None
-        decrypted_payload = decrypted_payload[:-pad_length]
-        
-        # 更新预期序列号
-        self.expected_seq = (self.expected_seq + 1) % (1 << 32)
-        
-        return decrypted_payload
+        # 直接整体解密
+        aes = ucryptolib.aes(self.key, ucryptolib.MODE_CTR, nonce)
+        logger.debug("解密成功。。。")
+        return aes.decrypt(ciphertext)  # CTR模式加密=解密
 
 
 

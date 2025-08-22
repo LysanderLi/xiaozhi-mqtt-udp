@@ -173,7 +173,7 @@ class Application(object):
                             self.audio_manager.aud.stopPlayStream()
                             # logger.debug("Clear the audio cache:清除播放缓存{}".format(self.audio_manager.stop()))
                             self.__protocol.listen("start")
-                            logger.debug("Start listening:开始监听")
+                            logger.debug("Start listening:")
                             is_listen_flag = True
                             self.__protocol.udp_send(data)
                         logger.debug("send opus data to server")
