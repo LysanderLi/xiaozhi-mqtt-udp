@@ -25,6 +25,7 @@ class AudioManager(object):
         self.aud.setVolume(volume)  # 设置音量
         self.aud.setCallback(self.audio_cb)
         self.rec = audio.Record(channel)
+        self.rec.gain_set(4,12)
         self.__skip = 0
 
     # ========== 音频文件 ====================

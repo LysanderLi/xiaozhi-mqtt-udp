@@ -131,24 +131,24 @@ if cli.publish(publish_topic,json.dumps(hello_msg)):
 cli.wait_msg()
 
 
-import usocket
+# import usocket
 
-#cli.mqtt_recv_thread()
- # 创建一个socket实例
-sock = usocket.socket(usocket.AF_INET, usocket.SOCK_DGRAM,usocket.IPPROTO_UDP)
-# 建立连接
-utime.sleep(10)
-sock.connect((UDP_IP,UDP_PORT))
-# 向服务端发送消息
-cli.listen("start")
-ret=sock.send('616816161619')
-print('send %d bytes' % ret)
+# #cli.mqtt_recv_thread()
+#  # 创建一个socket实例
+# sock = usocket.socket(usocket.AF_INET, usocket.SOCK_DGRAM,usocket.IPPROTO_UDP)
+# # 建立连接
+# utime.sleep(10)
+# sock.connect((UDP_IP,UDP_PORT))
+# # 向服务端发送消息
+# cli.listen("start")
+# ret=sock.send('616816161619')
+# print('send %d bytes' % ret)
 
-#接收服务端消息
-data=sock.recv(256)
-print('recv %s bytes:' % len(data))
-print(data.decode())
-utime.sleep(3)
+# #接收服务端消息
+# data=sock.recv(256)
+# print('recv %s bytes:' % len(data))
+# print(data.decode())
+# utime.sleep(3)
 
 
 

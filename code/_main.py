@@ -158,7 +158,7 @@ class Application(object):
         try:
             logger.debug("Starting chat process")
             with self.__protocol:
-                self.__protocol.connect()
+                #self.__protocol.connect()
                 self.power_red_led.on()
                 self.__protocol.wakeword_detected("小智")
                 logger.debug("send wakeword detected")
@@ -173,17 +173,17 @@ class Application(object):
                             self.audio_manager.aud.stopPlayStream()
                             # logger.debug("Clear the audio cache:清除播放缓存{}".format(self.audio_manager.stop()))
                             self.__protocol.listen("start")
-                            logger.debug("Start listening:")
                             is_listen_flag = True
-                            self.__protocol.udp_send(data)
-                        logger.debug("send opus data to server")
+                        self.__protocol.udp_send(data)
+                        #logger.debug("send opus data to server")
                     else:
                         if is_listen_flag:
                             self.__protocol.listen("stop")
                             is_listen_flag = False
                     if not self.__protocol.is_state_ok():
+                        logger("mqtt client is not ok")
                         break
-                    # logger.debug("read opus data length: {}".format(len(data)))
+                    #logger.debug("read opus data length: {}".format(len(data)))
 
         except Exception as e:
             logger.debug("working thread handler got Exception: {}".format(repr(e)))

@@ -60,8 +60,9 @@ OTA 返回的数据格式
  'mqtt': {'endpoint': 'mqtt.xiaozhi.me', 'publish_topic': 'device-server', 
         'client_id': 'GID_test@@@64_e8_33_48_ec_c0@@@7c18371a-3594-4380-be56-f1e934f4f2fa', 
         'username': 'eyJpcCI6IjIyMC4yMDAuMTI2LjE5In0=', 'password': 'Kduh/1JI4ZyxmyPSDGs0UMvYXZQxw1+clxXl4YOAOFU=', 
-        'subscribe_topic': 'null'}, 'server_time': {'timezone_offset': 480, 'timestamp': 1755139312182}, 
-        'firmware': {'url': '', 'version': '1.0.1'}}
+        'subscribe_topic': 'null'}, 
+ 'server_time': {'timezone_offset': 480, 'timestamp': 1755139312182}, 
+ 'firmware': {'url': '', 'version': '1.0.1'}}
 '''
 class MqttClient(object):
     def __init__(self):
@@ -87,7 +88,7 @@ class MqttClient(object):
             'Accept-Language': 'zh-CN',
             'Content-Type': 'application/json',
             'User-Agent': 'kevin-box-2/1.0.1',
-            'Device-Id': '64:e8:33:48:ec:c0',
+            'Device-Id': '64:e8:33:48:ec:c1',
             'Client-Id': cli_uuid
         }
         ota_data = JsonMessage({
@@ -119,12 +120,10 @@ class MqttClient(object):
         return "{}(host=\"{}\")".format(type(self).__name__, self._host)
 
     def __enter__(self):
-        #self.connect()
+        self.connect()
         pass
     def is_state_ok(self):
-        if self.cli.get_mqttsta() == 0 :
-            return True
-        return False
+        return self.cli.get_mqttsta() == 0 
     def __exit__(self, *args, **kwargs):
         logger.debug("__exit__ result udp close")
         self.disconnect()
@@ -140,7 +139,7 @@ class MqttClient(object):
                 "format": "opus",
                 "sample_rate": 16000,
                 "channels": 1,
-                "frame_duration": 100
+                "frame_duration": 60
             }
         })
         try:
@@ -199,9 +198,10 @@ class MqttClient(object):
                                                 aes_opus_info["udp"]["nonce"])
 
         encrypt_data = self.audio_encryptor.encrypt_packet(data)
-        logger.debug("send data:{} ".format(encrypt_data))
+        #logger.debug("send data:{} ".format(encrypt_data))
 
-        self.udp_socket.sendto(encrypt_data,(aes_opus_info["udp"]["server"],aes_opus_info["udp"]["port"]))
+        ret = self.udp_socket.sendto(encrypt_data,(aes_opus_info["udp"]["server"],aes_opus_info["udp"]["port"]))
+        logger.debug('send %d bytes' % ret)
         
     def set_callback(self, audio_message_handler=None, json_message_handler=None):
         if audio_message_handler is not None and callable(audio_message_handler):
@@ -222,22 +222,23 @@ class MqttClient(object):
     def __handle_mqtt_message(self,topic,msg):
         global aes_opus_info
         msg = JsonMessage.from_bytes(msg)
-        logger.info("recv data: ", msg)
+        #logger.info("recv data: ", msg)
         if msg["type"] == "hello":
             #logger.info("recv hello msg: ", msg)
             aes_opus_info = msg
+            self.audio_encryptor = None  # 强制下次发送时用新配置初始化
             self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,socket.IPPROTO_UDP)
             self.udp_socket.connect((aes_opus_info['udp']['server'], aes_opus_info['udp']['port']))
-            self.udp_connect_event.set()
-            self.udp_socket.settimeout(1)  # 设置0.1秒超时
+            logger.debug("UDP connect to ",aes_opus_info['udp']['server'], aes_opus_info['udp']['port'])
+            #self.udp_socket.settimeout(1)  # 设置1秒超时
             self._udp_recv = Thread(target=self._udp_recv_thread)
             self._udp_recv.start(stack_size=24)
-        
+            self.udp_connect_event.set()
         elif msg["type"] == "goodbye":
             logger.info("recv goodbye message")
             print(msg)
             aes_opus_info["session_id"] = None  # 清理会话标识
-            self.disconnect()
+            #self.disconnect()
         else:
             self.__handle_json_message(msg)
     def _mqtt_recv_thread(self):
@@ -248,24 +249,27 @@ class MqttClient(object):
                 if self._running:
                     logger.error("recv_thread error: ", e)
     def _udp_recv_thread(self):
+        logger.debug("udp recv thread start run")
         while self._running:
             try:
-                raw = self.udp_socket.recv(1024)
-                logger.info("udp recv: ", raw)
+                
+                raw = self.udp_socket.recv(256)
+                #logger.info("udp recv: ", raw)
+
+                # 确保加密器已初始化
+                if self.audio_encryptor is None:
+                    logger.warn("Encryptor not initialized!")
+                    continue
+                
+                decrypted = self.audio_encryptor.decrypt_packet(raw)
+                self.__handle_audio_message(decrypted)
+            # except socket.timeout:
+            #     continue  # 超时属于正常情况，继续等
             except Exception as e:
                 if self._running:
-                    logger.info("{} recv thread break, Exception details: {}".format(self, repr(e)))
-                    
-                break
+                    logger.debug("udp recv thread error")
+                utime.sleep(1)
             
-            if len(raw) < 16:
-                raise ValueError("Invalid packet length")
-            
-            # 解密
-            decrypted_payload = self.audio_encryptor.decrypt_packet(raw)
-            
-            # 处理解密后的Opus音频数据
-            self.__handle_audio_message(decrypted_payload)
                 
 
     def __handle_audio_message(self, raw):
@@ -324,272 +328,50 @@ class MqttClient(object):
 class AudioEncryptor:
     def __init__(self, key_hex, nonce_hex):
         self.key = ubinascii.unhexlify(key_hex)
-        self.base_nonce = ubinascii.unhexlify(nonce_hex)  # 原始12字节nonce
+        self.nonce = nonce_hex
         self.seq_num = 0
-
-    def encrypt_packet(self, payload):
-        """简化加密：整体加密+正确nonce结构"""
-        logger.debug("Encrypt: seq={}, len={}".format(self.seq_num, len(payload)))
-        # 1. 构造16字节新nonce (4字节base + 2字节长度 + 8字节base + 4字节序列号)
-        new_nonce = (
-            self.base_nonce[0:4] +
-            struct.pack(">H", len(payload)) +
-            self.base_nonce[4:12] +
-            struct.pack(">I", self.seq_num)
-        )
         
-        # 2. 整体加密（非分块）
-        logger.debug("准备加密数据...")
-        aes = ucryptolib.aes(self.key, ucryptolib.MODE_CTR, new_nonce)
+        # 验证密钥长度
+        if len(self.key) != 16:
+            raise ValueError("Invalid key length")
+
+    
+    def _generate_nonce(self, data_length):
+        """nonce生成逻辑"""
+        data_length = "{:04x}".format(data_length)
+        seq_num = "{:08x}".format(self.seq_num)
+        
+        return self.nonce[0:4] + data_length + self.nonce[8:24] + seq_num
+    
+    def encrypt_packet(self, payload):
+        """加密音频包"""
+        nonce = self._generate_nonce(len(payload))
+        nonce = ubinascii.unhexlify(nonce)
+        
+        # 使用CTR模式加密
+        aes = ucryptolib.aes(self.key, ucryptolib.MODE_CTR, nonce)
         encrypted = aes.encrypt(payload)
-        logger.debug("加密完成...")
-        # 3. 序列号递增（每个包只增一次）
-        self.seq_num = (self.seq_num + 1) % (1 << 32)
-        return new_nonce + encrypted
-
+        
+        # 更新序列号
+        self.seq_num += 1
+        
+        # 返回nonce + 加密数据
+        return nonce + encrypted
+    
     def decrypt_packet(self, raw):
-        """修正解密：前16字节=nonce，剩余=加密数据"""
-        logger.debug("开始解密...")
+        """解密音频包"""
         if len(raw) < 16:
-            return None
-
+            logger.warn("Packet too short: {} bytes".format(len(raw)))
+            return b""
+        
+        # 提取nonce和密文
         nonce = raw[:16]
         ciphertext = raw[16:]
-
-        # 直接整体解密
-        aes = ucryptolib.aes(self.key, ucryptolib.MODE_CTR, nonce)
-        logger.debug("解密成功。。。")
-        return aes.decrypt(ciphertext)  # CTR模式加密=解密
-
-
-
-
-'''
-class WebSocketClient(object):
-
-    def __init__(self, host=WSS_HOST, debug=WSS_DEBUG):
-        self.debug = debug
-        self.host = host
-        self.__resp_helper = RespHelper()
-        self.__recv_thread = None
-        self.__audio_message_handler = None
-        self.__json_message_handler = None
-        self.__last_text_value = None
-    
-    def __str__(self):
-        return "{}(host=\"{}\")".format(type(self).__name__, self.host)
-
-    def __enter__(self):
-        self.connect()
-        return self
-    
-    def __exit__(self, *args, **kwargs):
-        return self.disconnect()
-
-    def set_callback(self, audio_message_handler=None, json_message_handler=None):
-        if audio_message_handler is not None and callable(audio_message_handler):
-            self.__audio_message_handler = audio_message_handler
-        else:
-            raise TypeError("audio_message_handler must be callable")
         
-        if json_message_handler is not None and callable(json_message_handler):
-            self.__json_message_handler = json_message_handler
-        else:
-            raise TypeError("json_message_handler must be callable")
-        
-    @staticmethod
-    def get_mac_address():
-        # mac = str(uuid.UUID(int=int(modem.getDevImei())))[-12:]
-        # return ":".join([mac[i:i + 2] for i in range(0, 12, 2)])
-        return "64:e8:33:48:ec:c0"
-
-    @staticmethod
-    def generate_uuid() -> str:
-        return str(uuid.uuid4())
-
-    @property
-    def cli(self):
-        __client__ = getattr(self, "__client__", None)
-        if __client__ is None:
-            raise RuntimeError("{} not connected".format(self))
-        return __client__
-
-    def is_state_ok(self):
-        return self.cli.sock.getsocketsta() == 4
-    
-    def disconnect(self):
-        """disconnect websocket"""
-        __client__ = getattr(self, "__client__", None)
-        if __client__ is not None:
-            __client__.close()
-            del self.__client__
-        if self.__recv_thread is not None:
-            self.__recv_thread.join()
-            self.__recv_thread = None
-
-    def connect(self):
-        """connect websocket"""
-        __client__ = ws.Client.connect(
-            self.host, 
-            headers={
-                "Authorization": "Bearer {}".format(ACCESS_TOKEN),
-                "Protocol-Version": PROTOCOL_VERSION,
-                "Device-Id": self.get_mac_address(),
-                "Client-Id": self.generate_uuid()
-            }, 
-            debug=self.debug
-        )
-
         try:
-            self.__recv_thread = Thread(target=self.__recv_thread_worker)
-            self.__recv_thread.start(stack_size=16)
+            # 使用CTR模式解密
+            aes = ucryptolib.aes(self.key, ucryptolib.MODE_CTR, nonce)
+            return aes.decrypt(ciphertext)
         except Exception as e:
-            __client__.close()
-            logger.error("{} connect failed, Exception details: {}".format(self, repr(e)))
-        else:
-            setattr(self, "__client__", __client__)
-            return __client__
-
-    def __recv_thread_worker(self):
-        while True:
-            try:
-                raw = self.recv()
-            except Exception as e:
-                logger.info("{} recv thread break, Exception details: {}".format(self, repr(e)))
-                break
-            
-            if raw is None or raw == "":
-                logger.info("{} recv thread break, Exception details: read none bytes, websocket disconnect".format(self))
-                break
-            
-            try:
-                m = JsonMessage.from_bytes(raw)
-            except Exception as e:
-                self.__handle_audio_message(raw)
-            else:
-                if m["type"] == "hello":
-                    with self.__resp_helper:
-                        self.__resp_helper.put(m)
-                else:
-                    self.__handle_json_message(m)
-
-    def __handle_audio_message(self, raw):
-        if self.__audio_message_handler is None:
-            logger.warn("audio message handler is None, did you forget to set it?")
-            return
-        try:
-            self.__audio_message_handler(raw)
-        except Exception as e:
-            logger.error("{} handle audio message failed, Exception details: {}".format(self, repr(e)))
-    
-    def __handle_json_message(self, msg):
-        if self.__json_message_handler is None:
-            logger.warn("json message handler is None, did you forget to set it?")
-            return
-        try:
-            self.__json_message_handler(msg)
-        except Exception as e:
-            logger.debug("{} handle json message failed, Exception details: {}".format(self, repr(e)))
-            
-    # def topic(text_value):
-        
-            
-    def send(self, data):
-        """send data to server"""
-        # logger.debug("send data: ", data)
-        self.cli.send(data)
-
-    def recv(self):
-        """receive data from server, return None or "" means disconnection"""
-        data = self.cli.recv()
-        return data
-
-
-
-    def hello(self):
-        req = JsonMessage(
-            {
-                "type": "hello",
-                "version": 1,
-                "transport": "websocket",
-                "audio_params": {
-                    "format": "opus",
-                    "sample_rate": 16000,
-                    "channels": 1,
-                    "frame_duration": 100
-                },
-                "features": {
-                    "consistent_sample_rate": True
-                }
-            }
-        )
-        with self.__resp_helper:
-            self.send(req.to_bytes())
-            resp = self.__resp_helper.get(req, timeout=10)
-            # {'transport': 'websocket', 'type': 'hello', 'session_id': 'd2091edb', 'audio_params': {'frame_duration': 60, 'channels': 1, 'format': 'opus', 'sample_rate': 24000}, 'version': 1}
-            # logger.debug("hello resp: ", resp)
-            return resp
-
-    def listen(self, state, mode="auto", session_id=""):
-        with self.__resp_helper:
-            self.send(
-                JsonMessage(
-                    {
-                        "session_id": session_id,  # Websocket协议不返回 session_id，所以消息中的会话ID可设置为空
-                        "type": "listen",
-                        "state": state,  # "start": 开始识别; "stop": 停止识别; "detect": 唤醒词检测
-                        "mode": mode  # "auto": 自动停止; "manual": 手动停止; "realtime": 持续监听
-                    }
-                ).to_bytes()
-            )
-    
-    def wakeword_detected(self, wakeword, session_id=""):
-        with self.__resp_helper:
-            self.send(
-                JsonMessage(
-                    {
-                        "session_id": session_id,
-                        "type": "listen",
-                        "state": "detect",
-                        "text": wakeword  # 唤醒词
-                    }
-                ).to_bytes()
-            )
-    
-    def abort(self, session_id="", reason=""):
-        with self.__resp_helper:
-            self.send(
-                JsonMessage(
-                    {
-                        "session_id": session_id,
-                        "type": "abort",
-                        "reason": reason
-                    }
-                ).to_bytes()
-            )
-
-    def report_iot_descriptors(self, descriptors, session_id=""):
-        with self.__resp_helper:
-            self.send(
-                JsonMessage(
-                    {
-                        "session_id": session_id,
-                        "type": "iot",
-                        "descriptors": descriptors
-                    }
-                ).to_bytes()
-            )
-
-    def report_iot_states(self, states, session_id=""):
-        with self.__resp_helper:
-            self.send(
-                JsonMessage(
-                    {
-                        "session_id": session_id,
-                        "type": "iot",
-                        "states": states
-                    }
-                ).to_bytes()
-            )
-
-'''
+            logger.error("Decrypt failed: {}".format(e))
+            return b""
