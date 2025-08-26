@@ -80,6 +80,7 @@ class MqttClient(object):
         self.audio_encryptor = None
         self._running = False  # 添加线程运行标志
         self.udp_connect_event = Event()
+        self.mqtt_udp_flag = Event()
         self.ota_get()
 
     def ota_get(self):
@@ -102,7 +103,7 @@ class MqttClient(object):
                 "carrier": "CHINA UNICOM",
                 "csq": "22",
                 "imei": "****",
-                "iccid": "89860125801125427213"
+                "iccid": "89860125801125426850"
             }
         })
         ota_url = "https://api.tenclass.net/xiaozhi/ota/"
@@ -126,7 +127,9 @@ class MqttClient(object):
         return self.cli.get_mqttsta() == 0 
     def __exit__(self, *args, **kwargs):
         logger.debug("__exit__ result udp close")
-        self.disconnect()
+        if not self.mqtt_udp_flag.is_set():
+            self.disconnect()
+        self.mqtt_udp_flag.clear()
     def connect(self):
         hello_msg = JsonMessage({
             "type": "hello",
@@ -238,7 +241,9 @@ class MqttClient(object):
             logger.info("recv goodbye message")
             print(msg)
             aes_opus_info["session_id"] = None  # 清理会话标识
-            #self.disconnect()
+            self.mqtt_udp_flag.set()
+            self.disconnect()
+            
         else:
             self.__handle_json_message(msg)
     def _mqtt_recv_thread(self):

@@ -181,13 +181,14 @@ class Application(object):
                             self.__protocol.listen("stop")
                             is_listen_flag = False
                     if not self.__protocol.is_state_ok():
-                        logger("mqtt client is not ok")
+                        logger.info("mqtt client is not ok")
                         break
                     #logger.debug("read opus data length: {}".format(len(data)))
 
         except Exception as e:
             logger.debug("working thread handler got Exception: {}".format(repr(e)))
         finally:
+            logger.debug("working thread handler exit")
             self.power_red_led.blink(250, 250)
             self.stop_vad()
 

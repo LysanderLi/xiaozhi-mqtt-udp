@@ -12,7 +12,7 @@ head = {
 'Accept-Language': 'zh-CN',
 'Content-Type': 'application/json',
 'User-Agent': 'kevin-box-2/1.0.1',
-'Device-Id': '64:e8:33:48:ec:c0',
+'Device-Id': '64:e8:33:48:ec:c1',
 'Client-Id': uuid
 }
 
