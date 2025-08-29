@@ -71,7 +71,7 @@ class MqttClient(object):
         self._username = None
         self._password = None
         self.client_id = None 
-        self._keepalive = 240
+        self._keepalive = 120
         self._pub_topic = None
         self._sub_topic = None
         self.udp_socket = None
@@ -89,7 +89,7 @@ class MqttClient(object):
             'Accept-Language': 'zh-CN',
             'Content-Type': 'application/json',
             'User-Agent': 'kevin-box-2/1.0.1',
-            'Device-Id': '64:e8:33:48:ec:c1',
+            'Device-Id': self.get_mac_address(),
             'Client-Id': cli_uuid
         }
         ota_data = JsonMessage({
@@ -153,7 +153,7 @@ class MqttClient(object):
             self.cli.connect()
             if self.cli.get_mqttsta() == 0:  # 0表示连接成功
                 self._mqtt_recv = Thread(target=self._mqtt_recv_thread)
-                self._mqtt_recv.start(stack_size=16)
+                self._mqtt_recv.start(stack_size=64)
                 self.cli.subscribe(self._sub_topic)
                 utime.sleep(1)  # 确保订阅完成
                 self.mqtt_send(hello_msg.to_bytes())            
@@ -204,7 +204,7 @@ class MqttClient(object):
         #logger.debug("send data:{} ".format(encrypt_data))
 
         ret = self.udp_socket.sendto(encrypt_data,(aes_opus_info["udp"]["server"],aes_opus_info["udp"]["port"]))
-        logger.debug('send %d bytes' % ret)
+        #logger.debug('send %d bytes' % ret)
         
     def set_callback(self, audio_message_handler=None, json_message_handler=None):
         if audio_message_handler is not None and callable(audio_message_handler):
@@ -221,7 +221,7 @@ class MqttClient(object):
     def get_mac_address():
         # mac = str(uuid.UUID(int=int(modem.getDevImei())))[-12:]
         # return ":".join([mac[i:i + 2] for i in range(0, 12, 2)])
-        return "64:e8:33:48:ec:c0"
+        return "64:e8:33:48:ec:c1"
     def __handle_mqtt_message(self,topic,msg):
         global aes_opus_info
         msg = JsonMessage.from_bytes(msg)
@@ -235,7 +235,7 @@ class MqttClient(object):
             logger.debug("UDP connect to ",aes_opus_info['udp']['server'], aes_opus_info['udp']['port'])
             #self.udp_socket.settimeout(1)  # 设置1秒超时
             self._udp_recv = Thread(target=self._udp_recv_thread)
-            self._udp_recv.start(stack_size=24)
+            self._udp_recv.start(stack_size=128)
             self.udp_connect_event.set()
         elif msg["type"] == "goodbye":
             logger.info("recv goodbye message")
@@ -267,6 +267,9 @@ class MqttClient(object):
                     continue
                 
                 decrypted = self.audio_encryptor.decrypt_packet(raw)
+                if decrypted is None:
+                    logger.warn("The data received via UDP is abnormal.")
+                    continue
                 self.__handle_audio_message(decrypted)
             # except socket.timeout:
             #     continue  # 超时属于正常情况，继续等
@@ -367,7 +370,7 @@ class AudioEncryptor:
         """解密音频包"""
         if len(raw) < 16:
             logger.warn("Packet too short: {} bytes".format(len(raw)))
-            return b""
+            return None
         
         # 提取nonce和密文
         nonce = raw[:16]
@@ -379,4 +382,4 @@ class AudioEncryptor:
             return aes.decrypt(ciphertext)
         except Exception as e:
             logger.error("Decrypt failed: {}".format(e))
-            return b""
+            return None
