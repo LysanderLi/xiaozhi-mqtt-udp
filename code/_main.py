@@ -9,7 +9,6 @@ from usr.utils import ChargeManager, AudioManager, NetManager, TaskManager
 from usr.threading import Thread, Event, Condition
 from usr.logging import getLogger
 import sys_bus
-#from usr.ui3 import *
 
 
 logger = getLogger(__name__)
@@ -24,8 +23,6 @@ class Application(object):
         Pin(Pin.GPIO33, Pin.OUT, Pin.PULL_PD, 1)
         self.prev_emoj = None        
 
-        #初始化屏幕
-        #self.lvgl=lvglManager()
         
         # 初始化充电管理
         self.charge_manager = ChargeManager()
@@ -57,10 +54,14 @@ class Application(object):
     def __record_thread_handler(self):
         """纯粹是为了kws&vad能识别才起的线程持续读音频"""
         logger.debug("record thread handler enter")
+        count = 0
         while not self.__record_thread_stop_event.is_set():
             self.audio_manager.opus_read()
             utime.sleep_ms(5)
-            gc.collect()
+            count += 1
+            if count == 100:
+                gc.collect()
+                count = 0
         logger.debug("record thread handler exit")
 
     def start_kws(self):
@@ -161,11 +162,6 @@ class Application(object):
 
     def handle_tts_message(self, msg):
         logger.info(msg)
-        #state = msg["state"]
-        # if state == "start":
-        #     sys_bus.publish("update_screen","speaking_screen")
-        # elif state == "stop":
-        #     sys_bus.publish("update_screen","listening_screen")
 
         #raise NotImplementedError("handle_tts_message not implemented")
 
@@ -185,8 +181,5 @@ class Application(object):
         self.start_kws()
 
 if __name__ == "__main__":
-    #sys_bus.publish("update_screen","init_screen")
     app = Application()
     app.run()
-    #utime.sleep(2)
-    #sys_bus.publish("update_screen","open_eye_screen")
