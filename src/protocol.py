@@ -298,7 +298,7 @@ class MqttClient(object):
         except Exception as e:
             logger.debug("{} handle json message failed, Exception details: {}".format(self, repr(e)))
 
-    def listen(self, state, mode="auto"):
+    def listen(self, state, mode="manual"):
             self.mqtt_send(
                 JsonMessage(
                     {

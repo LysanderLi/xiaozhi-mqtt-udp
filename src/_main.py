@@ -141,7 +141,7 @@ class Application(object):
         logger.info("on_voice_activity_detection: {}".format(state))
         gc.collect()
         if state == 1:
-            self.audio_manager.stop()
+            self.__protocol.abort()
             self.__voice_activity_event.set()  # 有人声
         else:
             self.__voice_activity_event.clear()  # 无人声
